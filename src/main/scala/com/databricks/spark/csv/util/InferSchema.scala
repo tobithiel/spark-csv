@@ -16,6 +16,7 @@
 package com.databricks.spark.csv.util
 
 import java.sql.Timestamp
+import java.text.SimpleDateFormat
 
 import scala.util.control.Exception._
 
@@ -32,27 +33,31 @@ private[csv] object InferSchema {
    *     3. Replace any null types with string type
    */
   def apply(
-    tokenRdd: RDD[Array[String]],
-    header: Array[String],
-    nullValue: String = ""): StructType = {
-
+      tokenRdd: RDD[Array[String]],
+      header: Array[String],
+      nullValue: String = "",
+      dateFormatter: SimpleDateFormat = null): StructType = {
     val startType: Array[DataType] = Array.fill[DataType](header.length)(NullType)
     val rootTypes: Array[DataType] = tokenRdd.aggregate(startType)(
-      inferRowType(nullValue),
+      inferRowType(nullValue, dateFormatter),
       mergeRowTypes)
 
     val structFields = header.zip(rootTypes).map { case (thisHeader, rootType) =>
-      StructField(thisHeader, rootType, nullable = true)
+      val dType = rootType match {
+        case z: NullType => StringType
+        case other => other
+      }
+      StructField(thisHeader, dType, nullable = true)
     }
 
     StructType(structFields)
   }
 
-  private def inferRowType(nullValue: String)
+  private def inferRowType(nullValue: String, dateFormatter: SimpleDateFormat)
   (rowSoFar: Array[DataType], next: Array[String]): Array[DataType] = {
     var i = 0
     while (i < math.min(rowSoFar.length, next.length)) {  // May have columns on right missing.
-      rowSoFar(i) = inferField(rowSoFar(i), next(i), nullValue)
+      rowSoFar(i) = inferField(rowSoFar(i), next(i), nullValue, dateFormatter)
       i+=1
     }
     rowSoFar
@@ -62,11 +67,7 @@ private[csv] object InferSchema {
       first: Array[DataType],
       second: Array[DataType]): Array[DataType] = {
     first.zipAll(second, NullType, NullType).map { case ((a, b)) =>
-      val tpe = findTightestCommonType(a, b).getOrElse(StringType)
-      tpe match {
-        case _: NullType => StringType
-        case other => other
-      }
+      findTightestCommonType(a, b).getOrElse(NullType)
     }
   }
 
@@ -75,8 +76,62 @@ private[csv] object InferSchema {
    * point checking if it is an Int, as the final type must be Double or higher.
    */
   private[csv] def inferField(typeSoFar: DataType,
-    field: String,
-    nullValue: String = ""): DataType = {
+      field: String,
+      nullValue: String = "",
+      dateFormatter: SimpleDateFormat = null): DataType = {
+    def tryParseInteger(field: String): DataType = if ((allCatch opt field.toInt).isDefined) {
+      IntegerType
+    } else {
+      tryParseLong(field)
+    }
+
+    def tryParseLong(field: String): DataType = if ((allCatch opt field.toLong).isDefined) {
+      LongType
+    } else {
+      tryParseDouble(field)
+    }
+
+    def tryParseDouble(field: String): DataType = {
+      if ((allCatch opt field.toDouble).isDefined) {
+        DoubleType
+      } else {
+        tryParseTimestamp(field)
+      }
+    }
+
+    def tryParseTimestamp(field: String): DataType = {
+      if (dateFormatter != null) {
+        // This case infers a custom `dataFormat` is set.
+        if ((allCatch opt dateFormatter.parse(field)).isDefined){
+          TimestampType
+        } else {
+          tryParseBoolean(field)
+        }
+      } else {
+        // We keep this for backwords competibility.
+        if ((allCatch opt Timestamp.valueOf(field)).isDefined) {
+          TimestampType
+        } else {
+          tryParseBoolean(field)
+        }
+      }
+    }
+
+    def tryParseBoolean(field: String): DataType = {
+      if ((allCatch opt field.toBoolean).isDefined) {
+        BooleanType
+      } else {
+        stringType()
+      }
+    }
+
+    // Defining a function to return the StringType constant is necessary in order to work around
+    // a Scala compiler issue which leads to runtime incompatibilities with certain Spark versions;
+    // see issue #128 for more details.
+    def stringType(): DataType = {
+      StringType
+    }
+
     if (field == null || field.isEmpty || field == nullValue) {
       typeSoFar
     } else {
@@ -86,47 +141,12 @@ private[csv] object InferSchema {
         case LongType => tryParseLong(field)
         case DoubleType => tryParseDouble(field)
         case TimestampType => tryParseTimestamp(field)
+        case BooleanType => tryParseBoolean(field)
         case StringType => StringType
         case other: DataType =>
           throw new UnsupportedOperationException(s"Unexpected data type $other")
       }
     }
-  }
-
-
-  private def tryParseInteger(field: String): DataType = if ((allCatch opt field.toInt).isDefined) {
-    IntegerType
-  } else {
-    tryParseLong(field)
-  }
-
-  private def tryParseLong(field: String): DataType = if ((allCatch opt field.toLong).isDefined) {
-    LongType
-  } else {
-    tryParseDouble(field)
-  }
-
-  private def tryParseDouble(field: String): DataType = {
-    if ((allCatch opt field.toDouble).isDefined) {
-      DoubleType
-    } else {
-      tryParseTimestamp(field)
-    }
-  }
-
-  def tryParseTimestamp(field: String): DataType = {
-    if ((allCatch opt Timestamp.valueOf(field)).isDefined) {
-      TimestampType
-    } else {
-      stringType()
-    }
-  }
-
-  // Defining a function to return the StringType constant is necessary in order to work around
-  // a Scala compiler issue which leads to runtime incompatibilities with certain Spark versions;
-  // see issue #128 for more details.
-  private def stringType(): DataType = {
-    StringType
   }
 
   /**
@@ -152,6 +172,8 @@ private[csv] object InferSchema {
     case (t1, t2) if t1 == t2 => Some(t1)
     case (NullType, t1) => Some(t1)
     case (t1, NullType) => Some(t1)
+    case (StringType, t2) => Some(StringType)
+    case (t1, StringType) => Some(StringType)
 
     // Promote numeric types to the highest of the two and all numeric types to unlimited decimal
     case (t1, t2) if Seq(t1, t2).forall(numericPrecedence.contains) =>

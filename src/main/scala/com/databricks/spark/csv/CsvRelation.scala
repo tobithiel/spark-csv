@@ -16,6 +16,7 @@
 package com.databricks.spark.csv
 
 import java.io.IOException
+import java.text.SimpleDateFormat
 
 import scala.collection.JavaConversions._
 import scala.util.control.NonFatal
@@ -47,13 +48,12 @@ case class CsvRelation protected[spark] (
     userSchema: StructType = null,
     inferCsvSchema: Boolean,
     codec: String = null,
-    nullValue: String = "")(@transient val sqlContext: SQLContext)
+    nullValue: String = "",
+    dateFormat: String = null)(@transient val sqlContext: SQLContext)
   extends BaseRelation with TableScan with PrunedScan with InsertableRelation {
 
-  /**
-   * Limit the number of lines we'll search for a header row that isn't comment-prefixed.
-   */
-  private val MAX_COMMENT_LINES_IN_HEADER = 10
+  // Share date format object as it is expensive to parse date pattern.
+  private val dateFormatter = if (dateFormat != null) new SimpleDateFormat(dateFormat) else null
 
   private val logger = LoggerFactory.getLogger(CsvRelation.getClass)
 
@@ -101,23 +101,24 @@ case class CsvRelation protected[spark] (
   }
 
   override def buildScan: RDD[Row] = {
+    val simpleDateFormatter = dateFormatter
     val schemaFields = schema.fields
+    val rowArray = new Array[Any](schemaFields.length)
     tokenRdd(schemaFields.map(_.name)).flatMap { tokens =>
 
-      if (dropMalformed && schemaFields.length != tokens.size) {
+      if (dropMalformed && schemaFields.length != tokens.length) {
         logger.warn(s"Dropping malformed line: ${tokens.mkString(",")}")
         None
-      } else if (failFast && schemaFields.length != tokens.size) {
+      } else if (failFast && schemaFields.length != tokens.length) {
         throw new RuntimeException(s"Malformed line in FAILFAST mode: ${tokens.mkString(",")}")
       } else {
         var index: Int = 0
-        val rowArray = new Array[Any](schemaFields.length)
         try {
           index = 0
           while (index < schemaFields.length) {
             val field = schemaFields(index)
             rowArray(index) = TypeCast.castTo(tokens(index), field.dataType, field.nullable,
-              treatEmptyValuesAsNulls, nullValue)
+              treatEmptyValuesAsNulls, nullValue, simpleDateFormatter)
             index = index + 1
           }
           Some(Row.fromSeq(rowArray))
@@ -147,6 +148,7 @@ case class CsvRelation protected[spark] (
    * both the indices produced by `requiredColumns` and the ones of tokens.
    */
   override def buildScan(requiredColumns: Array[String]): RDD[Row] = {
+    val simpleDateFormatter = dateFormatter
     val schemaFields = schema.fields
     val requiredFields = StructType(requiredColumns.map(schema(_))).fields
     val shouldTableScan = schemaFields.deep == requiredFields.deep
@@ -157,8 +159,9 @@ case class CsvRelation protected[spark] (
     } else {
       requiredFields
     }
+    val rowArray = new Array[Any](safeRequiredFields.length)
     if (shouldTableScan) {
-      buildScan
+      buildScan()
     } else {
       val safeRequiredIndices = new Array[Int](safeRequiredFields.length)
       schemaFields.zipWithIndex.filter {
@@ -166,18 +169,20 @@ case class CsvRelation protected[spark] (
       }.foreach {
         case (field, index) => safeRequiredIndices(safeRequiredFields.indexOf(field)) = index
       }
-      val rowArray = new Array[Any](safeRequiredIndices.length)
       val requiredSize = requiredFields.length
       tokenRdd(schemaFields.map(_.name)).flatMap { tokens =>
-        if (dropMalformed && schemaFields.length != tokens.size) {
+
+        if (dropMalformed && schemaFields.length != tokens.length) {
           logger.warn(s"Dropping malformed line: ${tokens.mkString(delimiter.toString)}")
           None
-        } else if (failFast && schemaFields.length != tokens.size) {
+        } else if (failFast && schemaFields.length != tokens.length) {
           throw new RuntimeException(s"Malformed line in FAILFAST mode: " +
             s"${tokens.mkString(delimiter.toString)}")
         } else {
-          val indexSafeTokens = if (permissive && schemaFields.length != tokens.size) {
-            tokens ++ new Array[String](schemaFields.length - tokens.size)
+          val indexSafeTokens = if (permissive && schemaFields.length > tokens.length) {
+            tokens ++ new Array[String](schemaFields.length - tokens.length)
+          } else if (permissive && schemaFields.length < tokens.length) {
+            tokens.take(schemaFields.length)
           } else {
             tokens
           }
@@ -192,7 +197,8 @@ case class CsvRelation protected[spark] (
                 field.dataType,
                 field.nullable,
                 treatEmptyValuesAsNulls,
-                nullValue
+                nullValue,
+                simpleDateFormatter
               )
               subIndex = subIndex + 1
             }
@@ -240,7 +246,8 @@ case class CsvRelation protected[spark] (
         firstRow.zipWithIndex.map { case (value, index) => s"C$index"}
       }
       if (this.inferCsvSchema) {
-        InferSchema(tokenRdd(header), header, nullValue)
+        val simpleDateFormatter = dateFormatter
+        InferSchema(tokenRdd(header), header, nullValue, simpleDateFormatter)
       } else {
         // By default fields are assumed to be StringType
         val schemaFields = header.map { fieldName =>
@@ -255,13 +262,14 @@ case class CsvRelation protected[spark] (
    * Returns the first line of the first non-empty file in path
    */
   private lazy val firstLine = {
-    if (comment == null) {
-      baseRDD().first()
+    if (comment != null) {
+      baseRDD().filter { line =>
+        line.trim.nonEmpty && !line.startsWith(comment.toString)
+      }.first()
     } else {
-      baseRDD().take(MAX_COMMENT_LINES_IN_HEADER)
-        .find(! _.startsWith(comment.toString))
-        .getOrElse(sys.error(s"No uncommented header line in " +
-          s"first $MAX_COMMENT_LINES_IN_HEADER lines"))
+      baseRDD().filter { line =>
+        line.trim.nonEmpty
+      }.first()
     }
   }
 

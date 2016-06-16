@@ -1,4 +1,4 @@
-# Spark CSV Library
+# CSV Data Source for Apache Spark
 
 A library for parsing and querying CSV data with Apache Spark, for Spark SQL and DataFrames.
 
@@ -16,13 +16,13 @@ You can link against this library in your program at the following coordinates:
 ```
 groupId: com.databricks
 artifactId: spark-csv_2.10
-version: 1.3.0
+version: 1.4.0
 ```
 ### Scala 2.11
 ```
 groupId: com.databricks
 artifactId: spark-csv_2.11
-version: 1.3.0
+version: 1.4.0
 ```
 
 ## Using with Spark shell
@@ -30,16 +30,16 @@ This package can be added to  Spark using the `--packages` command line option. 
 
 ### Spark compiled with Scala 2.11
 ```
-$SPARK_HOME/bin/spark-shell --packages com.databricks:spark-csv_2.11:1.3.0
+$SPARK_HOME/bin/spark-shell --packages com.databricks:spark-csv_2.11:1.4.0
 ```
 
 ### Spark compiled with Scala 2.10
 ```
-$SPARK_HOME/bin/spark-shell --packages com.databricks:spark-csv_2.10:1.3.0
+$SPARK_HOME/bin/spark-shell --packages com.databricks:spark-csv_2.10:1.4.0
 ```
 
 ## Features
-This package allows reading CSV files in local or distributed filesystem as [Spark DataFrames](https://spark.apache.org/docs/1.3.0/sql-programming-guide.html).
+This package allows reading CSV files in local or distributed filesystem as [Spark DataFrames](https://spark.apache.org/docs/1.6.0/sql-programming-guide.html).
 When reading files the API accepts several options:
 * `path`: location of files. Similar to Spark can accept standard Hadoop globbing expressions.
 * `header`: when set to true the first line of files will be used to name columns and will not be included in data. All types will be assumed string. Default value is false.
@@ -55,11 +55,19 @@ When reading files the API accepts several options:
 * `charset`: defaults to 'UTF-8' but can be set to other valid charset names
 * `inferSchema`: automatically infers column types. It requires one extra pass over the data and is false by default
 * `comment`: skip lines beginning with this character. Default is `"#"`. Disable comments by setting this to `null`.
-* `codec`: compression codec to use when saving to file. Should be the fully qualified name of a class implementing `org.apache.hadoop.io.compress.CompressionCodec` or one of case-insensitive shorten names (`bzip2`, `gzip`, `lz4`, and `snappy`). Defaults to no compression when a codec is not specified.
 * `nullValue`: specificy a string that indicates a null value, any fields matching this string will be set as nulls in the DataFrame
+* `dateFormat`: specificy a string that indicates a date format. Custom date formats follow the formats at [`java.text.SimpleDateFormat`](https://docs.oracle.com/javase/7/docs/api/java/text/SimpleDateFormat.html). This applies to both `DateType` and `TimestampType`. By default, it is `null` which means trying to parse times and date by `java.sql.Timestamp.valueOf()` and `java.sql.Date.valueOf()`.
 * `minPartitions`: determines into how many partitions the file is divided
 
-The package also support saving simple (non-nested) DataFrame. When saving you can specify the delimiter and whether we should generate a header row for the table. See following examples for more details.
+The package also supports saving simple (non-nested) DataFrame. When writing files the API accepts several options:
+* `path`: location of files.
+* `header`: when set to true, the header (from the schema in the DataFrame) will be written at the first line.
+* `delimiter`: by default columns are delimited using `,`, but delimiter can be set to any character
+* `quote`: by default the quote character is `"`, but can be set to any character. This is written according to `quoteMode`.
+* `escape`: by default the escape character is `\`, but can be set to any character. Escaped quote characters are written.
+* `nullValue`: specificy a string that indicates a null value, nulls in the DataFrame will be written as this string.
+* `codec`: compression codec to use when saving to file. Should be the fully qualified name of a class implementing `org.apache.hadoop.io.compress.CompressionCodec` or one of case-insensitive shorten names (`bzip2`, `gzip`, `lz4`, and `snappy`). Defaults to no compression when a codec is not specified.
+* `quoteMode`: when to quote fields (`ALL`, `MINIMAL` (default), `NON_NUMERIC`, `NONE`), see [Quote Modes](https://commons.apache.org/proper/commons-csv/apidocs/org/apache/commons/csv/QuoteMode.html)
 
 These examples use a CSV file available for download [here](https://github.com/databricks/spark-csv/raw/master/src/test/resources/cars.csv):
 
@@ -69,7 +77,7 @@ $ wget https://github.com/databricks/spark-csv/raw/master/src/test/resources/car
 
 ### SQL API
 
-Spark-csv can infer data types:
+CSV data source for Spark can infer data types:
 ```sql
 CREATE TABLE cars
 USING com.databricks.spark.csv
@@ -110,12 +118,12 @@ import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType};
 
 val sqlContext = new SQLContext(sc)
-val customSchema = StructType(
+val customSchema = StructType(Array(
     StructField("year", IntegerType, true),
     StructField("make", StringType, true),
     StructField("model", StringType, true),
     StructField("comment", StringType, true),
-    StructField("blank", StringType, true))
+    StructField("blank", StringType, true)))
 
 val df = sqlContext.read
     .format("com.databricks.spark.csv")
@@ -169,12 +177,12 @@ import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType};
 
 val sqlContext = new SQLContext(sc)
-val customSchema = StructType(
+val customSchema = StructType(Array(
     StructField("year", IntegerType, true),
     StructField("make", StringType, true),
     StructField("model", StringType, true),
     StructField("comment", StringType, true),
-    StructField("blank", StringType, true))
+    StructField("blank", StringType, true)))
 
 val df = sqlContext.load(
     "com.databricks.spark.csv",
@@ -400,7 +408,7 @@ Automatically infer schema (data types), otherwise everything is assumed string:
 ```R
 library(SparkR)
 
-Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-csv_2.10:1.3.0" "sparkr-shell"')
+Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-csv_2.10:1.4.0" "sparkr-shell"')
 sqlContext <- sparkRSQL.init(sc)
 
 df <- read.df(sqlContext, "cars.csv", source = "com.databricks.spark.csv", inferSchema = "true")
@@ -412,7 +420,7 @@ You can manually specify schema:
 ```R
 library(SparkR)
 
-Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-csv_2.10:1.3.0" "sparkr-shell"')
+Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-csv_2.10:1.4.0" "sparkr-shell"')
 sqlContext <- sparkRSQL.init(sc)
 customSchema <- structType(
     structField("year", "integer"),
@@ -430,7 +438,7 @@ You can save with compressed output:
 ```R
 library(SparkR)
 
-Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-csv_2.10:1.3.0" "sparkr-shell"')
+Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-csv_2.10:1.4.0" "sparkr-shell"')
 sqlContext <- sparkRSQL.init(sc)
 
 df <- read.df(sqlContext, "cars.csv", source = "com.databricks.spark.csv", inferSchema = "true")

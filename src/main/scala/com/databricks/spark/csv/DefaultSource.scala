@@ -138,6 +138,8 @@ class DefaultSource
     }
     val nullValue = parameters.getOrElse("nullValue", "")
 
+    val dateFormat = parameters.getOrElse("dateFormat", null)
+
     val codec = parameters.getOrElse("codec", null)
     val minPartitions: Integer = parameters.getOrElse("minPartitions",
       sqlContext.sparkContext.defaultMinPartitions.toString).toInt
@@ -158,7 +160,8 @@ class DefaultSource
       schema,
       inferSchemaFlag,
       codec,
-      nullValue)(sqlContext)
+      nullValue,
+      dateFormat)(sqlContext)
   }
 
   override def createRelation(
